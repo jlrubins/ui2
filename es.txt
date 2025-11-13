@@ -1,0 +1,57 @@
+// Floating widget to toggle all map layers ON/OFF
+const widgetContainer = document.createElement("div");
+widgetContainer.style.position = "absolute";
+widgetContainer.style.top = "20px";
+widgetContainer.style.right = "20px";
+widgetContainer.style.zIndex = "1000";
+widgetContainer.style.background = "white";
+widgetContainer.style.border = "1px solid #ccc";
+widgetContainer.style.boxShadow = "0 2px 8px rgba(0,0,0,0.2)";
+widgetContainer.style.padding = "12px 20px";
+widgetContainer.style.borderRadius = "8px";
+widgetContainer.style.display = "flex";
+widgetContainer.style.gap = "12px";
+widgetContainer.style.alignItems = "center";
+
+// ON Button
+const onBtn = document.createElement("button");
+onBtn.textContent = "ON";
+onBtn.style.padding = "6px 16px";
+onBtn.style.background = "#388e3c";
+onBtn.style.color = "white";
+onBtn.style.border = "none";
+onBtn.style.borderRadius = "4px";
+onBtn.style.cursor = "pointer";
+onBtn.onclick = () => {
+  if (window.view && window.view.map && window.view.map.layers) {
+    window.view.map.layers.forEach(layer => {
+      layer.visible = true;
+      layer.listMode = "show"; // If using LayerList widget, ensure layers are "active"
+    });
+  }
+};
+
+// OFF Button
+const offBtn = document.createElement("button");
+offBtn.textContent = "OFF";
+offBtn.style.padding = "6px 16px";
+offBtn.style.background = "#c62828";
+offBtn.style.color = "white";
+offBtn.style.border = "none";
+offBtn.style.borderRadius = "4px";
+offBtn.style.cursor = "pointer";
+offBtn.onclick = () => {
+  if (window.view && window.view.map && window.view.map.layers) {
+    window.view.map.layers.forEach(layer => {
+      layer.visible = false;
+      layer.listMode = "hide"; // If using LayerList widget, ensure layers are "inactive"
+    });
+  }
+};
+
+widgetContainer.appendChild(onBtn);
+widgetContainer.appendChild(offBtn);
+
+// Add widget to the map's container (assuming the view.container is the DOM node of the map)
+const mapContainer = (window.view && window.view.container) ? window.view.container : document.body;
+mapContainer.appendChild(widgetContainer);
