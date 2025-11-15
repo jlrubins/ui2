@@ -1,197 +1,224 @@
 <?php
 
-    // Status should be 'O'
+use \LeaksApp\CoreHandler;
 
-    require('header.php');
+ini_set('memory_limit', '4G');
+error_reporting(E_ERROR | E_PARSE);
 
-    use \LeaksApp\CoreHandler;
+require_once __DIR__ . '/include.php';
+require_once('Helpers/classSecurity.php');
+require_once('Helpers/class.CORE.leaksUser.php');
 
-    if (isset($_POST["frmSubmitted"])) {
-        $level = filter_var($_POST["level"], FILTER_SANITIZE_NUMBER_INT);
-        $array_UniqueID = [];
-        $repaired = null;
-        $ProblemFoundCode = null;
-        $freqCol = 'lowFreq';
-        $freqVal = 141;
-        $levelCol = 'lowLevel';
-        $levelVal = $level;
+$dbh = CoreHandler::instance()->database(CONN_ID_LEAKS_DRIVEROUTES);
+$dbh_leaksapp = CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP);
 
-        $sql = "SELECT MAX(UniqueID)+1 as UniqueIDcount FROM leaks WHERE source = 'cli_flyover'";
-        $stmt = mysqli_prepare(CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn(), $sql);
-        if ($stmt) {
-            mysqli_stmt_execute($stmt);
-            $result = mysqli_stmt_get_result($stmt);
-            while ($row = mysqli_fetch_assoc($result)) {
-                $array_UniqueID[] = $row['UniqueIDcount'];
+$xml = 0;
+if (!empty($_GET['csv'])) { // if this is an xls request instead of json, we need to substitute parameters from cookie instead of actual GET
+    parse_str($_COOKIE['query'] ?? '', $_GET);
+    $xml = 1;
+}
+
+if (($xml == 1) && (!(isset($_GET['filter'])))) {
+    die("A filter is required.  No filter was detected by your web browser.  Please allow the grid to fully load prior to requesting an EXPORT.  <a href='viewLeaks.php'>Go Back to Leaks Page</a>");
+}
+
+$where_conditions = [];
+$params = [];
+$driveoutDate_from = "";
+$driveoutDate_to = "";
+
+// -------------------------------
+// Main Query Building Loop
+// -------------------------------
+if (!empty($_GET['filter'])) {
+    $filters = $_GET['filter'];
+
+    if (isset($filters['filters']) && is_array($filters['filters'])) {
+        foreach ($filters['filters'] as $filteritem) {
+            if (empty($filteritem['logic'])) {    // This is a parent-level condition
+                if (!empty($filteritem['field']) && !empty($filteritem['operator']) && isset($filteritem['value'])) {
+                    if ($filteritem['field'] == "driveoutDate") {
+                        $date_value = date("Y-m-d", strtotime(preg_replace("/\(.+\)/", "", $filteritem['value'])));
+                        if ($filteritem['operator'] == "gte") {
+                            $driveoutDate_from = $date_value;
+                        } elseif ($filteritem['operator'] == "lte") {
+                            $driveoutDate_to = $date_value;
+                        }
+                    }
+                }
+            } else {    // This is a nested condition
+                $sub_conditions = [];
+                if (isset($filteritem['filters']) && is_array($filteritem['filters'])) {
+                    foreach ($filteritem['filters'] as $SUBfilteritem) {
+                        // This is a [field,operator,value] pair
+                        if (!empty($SUBfilteritem['field']) && !empty($SUBfilteritem['operator']) && isset($SUBfilteritem['value'])) {
+                            if ($SUBfilteritem['field'] == "driveoutDate") {
+                                $date_value = date("Y-m-d", strtotime(preg_replace("/\(.+\)/", "", $SUBfilteritem['value'])));
+                                if ($SUBfilteritem['operator'] == "gte") {
+                                    $driveoutDate_from = $date_value;
+                                } elseif ($SUBfilteritem['operator'] == "lte") {
+                                    $driveoutDate_to = $date_value;
+                                }
+                            }
+                        }
+                    } // end of subfilter foreach
+                }
             }
-            mysqli_stmt_close($stmt);
-        }
-        
-        if (empty(array_filter($array_UniqueID))) {
-            $array_UniqueID[0] = 1;
-        }
+        } // end foreach
+    }
+} // if filter set
 
-        $TECHID = filter_var($_SESSION['XOC']['USERNAME'], FILTER_SANITIZE_STRING);
-        $locationId = 36511; // Freedom (Arcom) -- choose a random  NED region so it will match ticketing threshold settings
-        $query = "INSERT INTO `leaks`.`leaks` 
-												(`UniqueID`,
-												`DateTimeofRecord`,
-												`Latitude`,
-												`Longitude`,
-												`uV_mLevel`,
-												`Status`,
-												`ProblemFoundCode`,
-												`Comments`,
-												`DateofRepair`,
-												`TechID`,
-												`insertDate`,
-												`source`,
-												`locationId`,
-												`$levelCol`,
-												`$freqCol`)
-												VALUES
-												(?, ?, ?, ?, ?, 'O', ?, ?, ?, ?, sysdate(), 'cli_flyover', ?, ?, ?)";
+// Process date filters
+if ($driveoutDate_from != "" && $driveoutDate_to != "") {
+    $where_conditions[] = "driveoutDate >= ? AND driveoutDate <= ?";
+    $params[] = $driveoutDate_from . ' 00:00:00';
+    $params[] = $driveoutDate_to . ' 23:59:59';
+} elseif ($driveoutDate_from != "" && $driveoutDate_to == "") {
+    $where_conditions[] = "driveoutDate >= ?";
+    $params[] = $driveoutDate_from . ' 00:00:00';
+} elseif ($driveoutDate_from == "" && $driveoutDate_to != "") {
+    $where_conditions[] = "driveoutDate <= ?";
+    $params[] = $driveoutDate_to . ' 23:59:59';
+}
 
-        $conn = CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn();
-        $stmt = mysqli_prepare($conn, $query);
-        
-        if ($stmt) {
-            // Sanitize all input values
-            $uniqueId = filter_var($array_UniqueID[0], FILTER_SANITIZE_NUMBER_INT);
-            $dateTimeOfRecord = filter_var($_POST['detected'], FILTER_SANITIZE_STRING);
-            $latitude = filter_var($_POST['lat'], FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
-            $longitude = filter_var($_POST['lng'], FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
-            $uvLevel = filter_var($_POST['level'], FILTER_SANITIZE_NUMBER_INT);
-            $comments = filter_var($_POST['comments'], FILTER_SANITIZE_STRING);
-            $repairedValue = $repaired;
-            $techId = $TECHID;
-            $locationIdValue = $locationId;
-            $levelValValue = $levelVal;
-            $freqValValue = $freqVal;
+// Process location tree
+if (!empty($_GET['locations'])) {
+    $location_ids = preg_replace("/[^0-9,]/", '', $_GET['locations']);
+    if (!empty($location_ids)) {
+        $where_conditions[] = "locationId IN (" . $location_ids . ")";
+    }
+}
+
+// Build ORDER BY clause
+$order = "ORDER BY deviceId ASC, driveoutDate DESC";
+if (!empty($_GET['sort']) && is_array($_GET['sort'])) {
+    $sort_field = preg_replace('/[^a-zA-Z0-9_]/', '', $_GET['sort'][0]['field'] ?? 'deviceId');
+    $sort_dir = ($_GET['sort'][0]['dir'] ?? 'ASC') === 'desc' ? 'DESC' : 'ASC';
+    $order = "ORDER BY " . $sort_field . " " . $sort_dir;
+}
+
+// Build WHERE clause
+$where = "";
+if (!empty($where_conditions)) {
+    $where = "WHERE " . implode(" AND ", $where_conditions);
+}
+
+// Get locationId mapping
+$LocNames = $dbh_leaksapp->runSQLResult("SELECT id, `desc` FROM leaks.locations WHERE active=1 ORDER BY id ASC");
+
+// Get count for paging calculation
+$count_query = "SELECT COUNT(*) FROM leaks_driveroutes.report_tech_houses_driven r " . $where;
+$count_stmt = mysqli_prepare($dbh->getConn(), $count_query);
+if ($count_stmt) {
+    // Bind parameters if we have any
+    if (!empty($params)) {
+        $types = str_repeat('s', count($params));
+        mysqli_stmt_bind_param($count_stmt, $types, ...$params);
+    }
+    mysqli_stmt_execute($count_stmt);
+    $count_result = mysqli_stmt_get_result($count_stmt);
+    $count = mysqli_fetch_row($count_result);
+    mysqli_stmt_close($count_stmt);
+} else {
+    $count = [0];
+}
+
+$select = "r.driveoutDate,r.locationId,r.deviceId,r.technician,r.numUniqueDotsDriven,r.numLeaks";
+$join = "";
+$groupby = "";
+
+// Build main data query
+$data_query = "SELECT " . $select . " FROM leaks_driveroutes.report_tech_houses_driven r " . $join . " " . $where . " " . $groupby . " " . $order;
+
+// Add paging if not exporting to CSV
+if (!$xml) {
+    $skip = filter_var($_GET['skip'] ?? 0, FILTER_SANITIZE_NUMBER_INT);
+    $data_query .= " LIMIT 100 OFFSET " . (int)$skip;
+}
+
+set_time_limit(240); // allow lots of time in case of massive query
+
+// Execute main data query
+$data_stmt = mysqli_prepare($dbh->getConn(), $data_query);
+$tech_dots_driven = [];
+if ($data_stmt) {
+    // Bind parameters if we have any
+    if (!empty($params)) {
+        $types = str_repeat('s', count($params));
+        mysqli_stmt_bind_param($data_stmt, $types, ...$params);
+    }
+    mysqli_stmt_execute($data_stmt);
+    $result = mysqli_stmt_get_result($data_stmt);
+    
+    $i = 0;
+    if ($result && mysqli_num_rows($result)) {
+        while ($rowDO = mysqli_fetch_assoc($result)) {
+            $rowDO['locName'] = GetLocNameFromId($rowDO['locationId'], $LocNames);
+            unset($rowDO['locationId']);
             
-            mysqli_stmt_bind_param($stmt, "issssissssssii", 
-                $uniqueId,
-                $dateTimeOfRecord,
-                $latitude,
-                $longitude,
-                $uvLevel,
-                $ProblemFoundCode,
-                $comments,
-                $repairedValue,
-                $techId,
-                $locationIdValue,
-                $levelValValue,
-                $freqValValue
-            );
+            foreach($rowDO as $key => $value) {
+                $rowDO[$key] = filter_var($value, FILTER_SANITIZE_STRING);
+            }
             
-            $results = mysqli_stmt_execute($stmt);
-            $insertId = mysqli_insert_id($conn);
-            mysqli_stmt_close($stmt);
-            
-            if (!$results) {
-                die("Invalid Query: " . mysqli_error($conn));
+            if ($xml) {
+                // add lines to csv
+                if ($i == 0) {
+                    // output headers so that the file is downloaded rather than displayed
+                    header('Content-Type: text/csv; charset=utf-8');
+                    header('Content-Disposition: attachment; filename=report_tech_dots_driven.csv');
+
+                    // create a file pointer connected to the output stream
+                    $output = fopen('php://output', 'w');
+
+                    $headers = [];
+                    foreach(array_keys($rowDO) as $key) {
+                        $headers[] = filter_var($key, FILTER_SANITIZE_STRING);
+                    }
+                    // output the column headings
+                    fputcsv($output, $headers);
+                    fputcsv($output, $rowDO); // output first row
+                    $i++;
+                } else {
+                    fputcsv($output, $rowDO);
+                }
             } else {
-                echo "<h3>Congratulations, you have just submitted a new leak. Please click here to see the <a href=details.php?id=" . $insertId . ">details</a></h3>";
+                $tech_dots_driven[] = $rowDO;
             }
-        } else {
-            die("Prepare failed: " . mysqli_error($conn));
         }
     }
+    
+    if ($data_stmt) {
+        mysqli_stmt_close($data_stmt);
+    }
+}
 
-    echo '<h2>Add Leak from CLI Flyover</h2>
-            <blockquote>
-            <p>This form will create an open pending leak that needs to be repaired.  </p>
-            <p>If the leak qualifies for ticketing, it will be processed shortly after by NWT JB or an SRO.</p>
-            </blockquote>';
-    echo '<form id="newLeakForm" class="form-horizontal" method="post" action="new_leak_cli_flyover.php">';
-
-    $query = "SELECT o.sourceId, o.desc, o.id
-    FROM leaks.locations o
-    WHERE o.`active` = 1
-    GROUP BY sourceId, o.desc
-    ORDER BY o.desc";
-
-    $results = mysqli_query(CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn(), $query) or print_r(
-        'Query Error ' . mysqli_error(CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn())
+if ($xml) { // excel file requested
+    if (isset($output)) {
+        fclose($output);
+    }
+    if ($i == 0) // no rows were read, so simply return to sender
+    {
+        echo json_encode(['total' => 0,'tech_dots_driven' => []]);
+    }
+} else { // else deliver json
+    header('Content-type: application/json');
+    setcookie("query", filter_input(INPUT_SERVER, 'QUERY_STRING', FILTER_SANITIZE_URL), time()+3600, '/', '', true, true);
+    echo json_encode(
+        array (
+            'total'              => $count[0] ?? 0,
+            'tech_dots_driven' => $tech_dots_driven
+        )
     );
+}
 
-    echo '
-    <div class="form-group">
-        <label for="lat" class="col-sm-2 control-label">Lat</label>
-        <div class="col-sm-5">
-        <input class="form-control " id="lat" name="lat" placeholder="Lat">
-        </div>
-    </div>';
-
-    echo '
-  <div class="form-group">
-    <label for="lng" class="col-sm-2 control-label">Long</label>
-	<div class="col-sm-5">
-    <input class="form-control " id="lng" name="lng" placeholder="Long">
-	</div>
-  </div>';
-
-
-    echo '
-  <div class="form-group">
-    <label for="level" class="col-sm-2 control-label">Aeronautical Level</label>
-	<div class="col-sm-5">
-    <input class="form-control validate[required ,custom[onlyNumberSp]] " id="level" name="level" value="100" />
-	</div>
-  </div>';
-
-
-    echo '
-  <div class="form-group">
-    <label for="detected" class="col-sm-2 control-label">Date Detected</label>
-	<div class="col-sm-5">
-		<input type=text id="detected" name="detected" value="' . date('Y-m-d') . '" class="form-control validate[required]" maxsize="10">
-	</div>
-  </div>
-  ';
-
-
-    echo '
-  <div class="form-group">
-    <label for="comments" class="col-sm-2 control-label">Comments</label>
-	<div class="col-sm-5">
-    <textarea id="address" name="comments" id=comments class="form-control"></textarea>
-	</div>
-  </div>';
-
-    echo '<div class="form-group">
-<div class="col-sm-offset-2 col-sm-10">
-<input type="hidden" name="frmSubmitted" value="1" />
-<button type="submit" id=submitBtn class="btn btn-default">Add Leak</button>
-</div></div>
-</form>
-';
-
-    include('footer.php');
-
-?>
-<link rel="stylesheet" href="/CSS/jquery.validationEngine___latest.css"/>
-<script src="/JS/jquery.validationEngine-en___latest.js" charset="utf-8"></script>
-<script src="/JS/jquery.validationEngine___latest.js" charset="utf-8"></script>
-<link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.2/css/select2.min.css" rel="stylesheet"/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.2/js/select2.min.js"></script>
-<script>
-
-    $("#detected").datepicker({
-        dateFormat: 'yy-mm-dd'
-    });
-
-    $(document).ready(function () {        
-        $('#submitBtn').click(function (e) {
-            e.preventDefault()
-            if ($("#newLeakForm").validationEngine('validate')) {                
-                $("form").submit();
-            }
-        });
-        $('select').select2();
-        $("#status").on('change', function () {
-            var statusSelected = $(this).val();
-            console.log(statusSelected);
-        });
-    });
-</script>
+//-------------------------------------------------------------------
+//-------------------------------------------------------------------
+function GetLocNameFromId($id, $LocNames)
+{
+    foreach ($LocNames as $row) {
+        if ($row['id'] == $id) {
+            return filter_var($row['desc'], FILTER_SANITIZE_STRING);
+        }
+    }
+    return "";
+}
