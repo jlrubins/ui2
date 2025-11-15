@@ -1,243 +1,282 @@
-<?php
+/*
+Functions for index and node search pages
+*/
 
-require_once __DIR__ . '/include.php';
-require_once('Helpers/classSecurity.php');
-require_once('Helpers/class.CORE.leaksUser.php');
+function loadTotals(urlStr) {
+    var url = "getData.php?a=showTotals" + urlStr + "&csrf_token=" + $('#csrf_token').val();
+    $.get(url, function (data) {
+        $("#showTotals").html(data);
+    });
 
-use \LeaksApp\CoreHandler;
-use \LeaksApp\General;
-
-// Set memory limit and error reporting
-ini_set('memory_limit', '1G');
-error_reporting(E_ERROR | E_PARSE);
-set_time_limit(240000); // allow lots of time in case of massive query
-
-// Set download cookie
-setCookie("downloadStarted", 1, time() + 20, '/', "", false, false);
-
-// Validate user session
-$username = filter_var($_SESSION['XOC']['USERNAME'] ?? '', FILTER_SANITIZE_STRING);
-if (empty($username)) {
-    die('Unauthorized access');
 }
 
-// Get user locations with proper validation
-$locs = General::instance()->getUserLocations($username);
-$locations = [];
-$strWhere = '';
+function loadTotalsByDate(urlStr) {
 
-// Validate and sanitize locations
-if (!empty($locs) && is_array($locs)) {
-    // Ensure all location IDs are integers
-    foreach ($locs as $loc) {
-        if (is_numeric($loc)) {
-            $locations[] = (int)$loc;
+    var url = "getData.php?a=showTotalsByDate" + urlStr + "&csrf_token=" + $('#csrf_token').val();
+    $.get(url, function (data) {
+        $("#showTotalsByDate").html(data);
+    });
+
+}
+
+//take list html and push it into div
+function populateListHTML() {
+
+    var listHTML = '';
+
+    var length = jsonData.length;
+    //alert(length);
+    listHTML += '<table class="table table-striped"><tr><td>Account / House</td><td>Address</td><td>uV/m</td><tr>';
+
+    for (i = 0; i < length; i++) {
+
+        listHTML += '<tr><td><a target=_blank href=details.php?id=' + jsonData[i].lid + '>' + jsonData[i].acct + ' ' + jsonData[i].house + '</td><td>' + jsonData[i].Address + '</td>'
+        listHTML += '<td>' + jsonData[i].uV_mLevel + '</td>';
+        //listHTML += '<td>' + jsonData[i].wt_job + '</td>';
+        listHTML += '<tr>';
+
+    }
+    listHTML += '</table>';
+
+    $("#map_canvas").html('<table width=100%>' + listHTML + '</table>');
+    $("#map_canvas").css("overflow-y", "scroll");
+    $("#map_canvas").css("background-color", "white");
+
+}
+
+//take list html and push it into div
+function populateListHTML2() {
+
+    var listHTML = '';
+
+    var length = jsonData.length;
+    //console.log(jsonData);
+    listHTML += '<table class="table table-striped"><tr><td>Account / House ';
+    listHTML += '<button id=btnCheckAll type="button" class="btn btn-default btn-xs">Check All</button>';
+    listHTML += '<button id=btnUnCheckAll type="button" class="btn btn-default btn-xs">Uncheck All</button>';
+
+    listHTML += '&nbsp; &nbsp; ';
+
+    listHTML += '<button id=btnCloseAll type="button" class="btn btn-default btn-xs">Close</button>';
+    listHTML += '<button id=btnWTmain type="button" class="btn btn-default btn-xs">Create WT</button>';
+    listHTML += '</td><td>Address</td><td>uV/m</td><td>Repaired</td><td>Job</td><tr>';
+
+    for (i = 0; i < length; i++) {
+
+
+        listHTML += '<tr><td>';
+
+        var jobhtml = null;
+        if (jsonData[i].eq_job != null) jobhtml = jsonData[i].job_type + ' ' + jsonData[i].eq_job;
+        if (jsonData[i].wt_job != null) jobhtml = jsonData[i].job_type + ' ' + jsonData[i].wt_job;
+        if (jsonData[i].jobid != null) jobhtml = jsonData[i].job_type + ' ' + jsonData[i].jobid;
+
+        if (jsonData[i].jobhtml == null) {
+            listHTML += '<input type="checkbox" value="' + jsonData[i].lid + '" text="test text">';
         }
+        listHTML += ' <a target=_blank href=details.php?id=' + jsonData[i].lid + '>' + jsonData[i].acct + ' ' + jsonData[i].house + '</td><td>' + jsonData[i].Address + '</td>'
+        listHTML += '<td>' + jsonData[i].uV_mLevel + '</td><td>' + jsonData[i].repair_date + '</td>';
+
+
+        //console.log(jsonData[i]);
+
+        if (jobhtml == null) jobhtml = 'n/a';
+        listHTML += '<td>' + jobhtml + '</td>';
+
+        listHTML += '<tr>';
+
     }
-    
-    if (!empty($locations)) {
-        // Create a safe IN clause using implode with integers
-        $locPlaceholders = str_repeat('?,', count($locations) - 1) . '?';
-        $strWhere = " AND l.locationId IN ($locPlaceholders)";
-    }
+
+    listHTML += '</table>';
+
+    $("#map_canvas").html('<table width=100%>' + listHTML + '</table>');
+    $("#map_canvas").css("overflow-y", "scroll");
+    $("#map_canvas").css("background-color", "white");
 }
 
-// Set show last days parameter with default value
-$showLast = 20;
-if (isset($_GET['days']) && is_numeric($_GET['days'])) {
-    $showLast = (int)$_GET['days'];
-    // Limit the range to prevent abuse
-    $showLast = max(1, min($showLast, 365));
-}
 
-// Prepare the main query with parameterized statements to prevent SQL injection
-$query = "SELECT 
-    a.acct, 
-    a.leakid lid, 
-    a.address_line1 address, 
-    l.DateTimeofRecord, 
-    a.city,
-    l.uV_mLevel, 
-    a.repair_code, 
-    a.repair_date,
-    a.repair_time,
-    a.tech, 
-    a.wt_job, 
-    a.ordid,
-    a.jobid,
-    l.Status,
-    a.job_status,
-    a.node_name,
-    a.mgmt_area,
-    l.DeviceSerial,
-    substr(a.fta_code,5,4) as prin,    
-    b.leakid lid2, 
-    b.address_line1 address2, 
-    m.DateTimeofRecord DateTimeofRecord2, 
-    b.city city2, 
-    m.uV_mLevel uV_mLevel2,
-    b.repair_code repair_code2, 
-    b.repair_date repair_date2,
-    b.repair_time repair_time2,
-    b.tech tech2, 
-    b.wt_job wt_job2, 
-    b.ordid ordid2,
-    b.jobid jobid2,
-    m.Status Status2,
-    b.job_status job_status2,
-    b.node_name node_name2,
-    b.mgmt_area mgmt_area2,
-    m.DeviceSerial DeviceSerial2,
-    substr(b.fta_code,5,4) as prin2,    
-    c.desc as CompanyName     
-FROM leaks.accts_to_SRO a
-INNER JOIN leaks.accts_to_SRO b ON a.acct = b.acct 
-    AND a.acct != '' AND b.acct != '' AND a.leakid != b.leakid
-INNER JOIN leaks.leaks l ON a.leakid = l.id AND l.DateTimeofRecord >= (NOW() - INTERVAL ? DAY) 
-INNER JOIN leaks.leaks m ON b.leakid = m.id AND m.DateTimeofRecord >= (NOW() - INTERVAL ? DAY) 
-LEFT JOIN locations c ON c.id = l.locationId
+//--------------------------------------------------------------------------------------------
+function showCloseAllModal() {
+    //alert('Hold tight, still working on this');
 
-WHERE 1=1    
-AND (l.peakid != m.peakid OR l.peakid = '' OR l.peakid IS NULL OR l.peakid = 0)
-$strWhere";
+    var mymodal = $('#myModal');
 
-// Prepare statement to prevent SQL injection
-try {
-    $dbConnection = CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn();    
-    $stmt = mysqli_prepare($dbConnection, $query);    
-    if (!$stmt) {
-        throw new Exception("Failed to prepare statement: " . mysqli_error($dbConnection));
-    }
-    
-    // Bind parameters
-    $params = [$showLast, $showLast];
+    var checkboxes = $("#map_canvas").find('input:checkbox');
+    //console.log(checkboxes);
 
-    // Then add location parameters if any
-    if (!empty($locations)) {
-        $params = array_merge($params, $locations);
-    }
-    
-    // Create type string for bind_param (all integers except for the first two which are also integers)
-    $types = str_repeat('i', count($params));
-    
-    // Bind parameters dynamically
-    mysqli_stmt_bind_param($stmt, $types, ...$params);
-    
-    // Execute the statement
-    if (!mysqli_stmt_execute($stmt)) {
-        throw new Exception("Failed to execute statement: " . mysqli_stmt_error($stmt));
-    }
-    
-    $results = mysqli_stmt_get_result($stmt);
-    
-} catch (Exception $e) {
-    error_log("Database error: " . $e->getMessage());
-    die("An error occurred while processing your request.");
-}
+    var arr = [];
+    var html = "";
+    $('#btnCloseLeaks').prop("enabled", true);
 
-// Set headers for CSV download
-header('Content-Type: text/csv; charset=utf-8');
-header('Content-Disposition: attachment; filename=LeakData_Repeats.csv');
-
-// Create file pointer
-$output = fopen('php://output', 'w');
-
-// Write CSV header
-fputcsv($output, [
-    'wt_job',
-    'id',
-    'Address',
-    'uV_mLevel',
-    'Status',
-    'SRO_Status',
-    'DateTimeofRecord',
-    'jobid',
-    'acct',
-    'prin',
-    'city',
-    'node',
-    'ma',
-    'DeviceSerial',
-    'repair_code',
-    'repair_date',
-    'tech',
-    'CompanyName',
-    'WorkOrder'
-]);
-
-// Process results
-$i = 0;
-$prevAcct = '';
-while ($row = mysqli_fetch_assoc($results)) {
-    $i++;
-    
-    // Sanitize account field to prevent CSV injection
-    $fields_to_escape = ['acct'];
-    foreach ($fields_to_escape as $field) {
-        if (isset($row[$field])) {
-            // Add apostrophe to prevent formula injection
-            $row[$field] = "\t" . $row[$field]; // Prefix with tab
+    checkboxes.each(function () {
+        if ($(this)[0].checked) {
+            //console.log(jsonData.find(getText));
+            html += $(this)[0].value + "<BR>";
+            arr.push($(this)[0].value);
         }
+
+    })
+    //console.log(arr);
+
+    //if no checkboxes selected
+    if (html == "") {
+        //var currText = mymodal.find('.modal-body').html();
+        mymodal.find('.modal-body').html('You did not select any leaks to close.');
+        $('#btnCloseLeaks').prop("disabled", true);
+        $('#myModal').modal('toggle');
+        return false;
     }
 
-    // Only write first record if it's a new account
-    if ($prevAcct != $row['acct']) {
-        fputcsv($output, [
-            $row['wt_job'],
-            $row['lid'],
-            $row['address'],
-            $row['uV_mLevel'],
-            $row['Status'],
-            $row['job_status'],
-            $row['DateTimeofRecord'],
-            $row['jobid'],
-            $row['acct'],
-            $row['prin'],
-            $row['city'],
-            $row['node_name'],
-            $row['mgmt_area'],
-            $row['DeviceSerial'],
-            $row['repair_code'],
-            $row['repair_date'] . " " . $row['repair_time'],
-            $row['tech'],
-            $row['CompanyName'],
-            "\t" . $row['ordid'] // Prefix with tab to prevent formula injection
-        ]);
-        $prevAcct = $row['acct'];
+    //$("input:checkbox").prop('checked', $(this).prop("checked"));
+    html = "You are about to close:<BR>" + html + " with this ";
+
+    //get and show a select list of repair codes
+    $.ajax({
+        url: "getData.php?a=showRepairReasons&csrf_token=" + $('#csrf_token').val(),
+        type: "get",
+        async: false,
+        success: function (dataFromAjaxCall) {
+            html += dataFromAjaxCall;
+        },
+        error: function () {    /*connectionError();*/
+        }
+    });
+
+    //button to close everything
+    $('#btnCloseLeaks').click(function (event) {
+        $('#loading').show();
+        $('#btnCloseLeaks').prop("disabled", true);
+        var closehtml = '';
+
+        tech = username;
+        reason = $('#selRepairReasons').val();
+        if (reason == '') {
+            alert('Please select a repair reason');
+            $('#btnCloseLeaks').prop("disabled", false);
+            return false;
+        }
+
+        //loop through all the selected leaks
+        arr.forEach(function (leakid) {
+
+            //console.log(leakid);
+
+            if (1) // toggle to disable actual closing
+            {
+                var url = "getData.php?a=close&id=" + leakid + "&tech=" + tech + "&reason=" + reason + "&csrf_token=" + $('#csrf_token').val();
+                //console.log(url);
+
+                $.ajax({
+                    url: url,
+                    type: "get",
+                    async: false,
+                    success: function (dataFromAjaxCall) {
+                        closehtml += dataFromAjaxCall + "\r\n";
+                    },
+                    error: function () {
+                    }
+                });
+            }
+
+
+        });
+
+        $('#loading').hide();
+        alert(closehtml);
+        window.location = refreshUrl;
+        $('#myModal').modal('toggle');
+        return true;
+
+    })
+
+    //show the modal
+    //var currText = mymodal.find('.modal-body').html();
+    mymodal.find('.modal-body').html(html);
+    $('#myModal').modal('toggle');
+}
+
+//--------------------------------------------------------------------------------------------
+function showWTModal() {
+    //alert('Hold tight, still working on this');
+
+    var createmodal = $('#createModal');
+
+    var checkboxes = $("#map_canvas").find('input:checkbox');
+    //console.log(checkboxes);
+
+    var arr = [];
+    var html = "";
+    $('#btnWTcreate').prop("enabled", true);
+
+    checkboxes.each(function () {
+        if ($(this)[0].checked) {
+            //console.log(jsonData.find(getText));
+            html += $(this)[0].value + "<BR>";
+            arr.push($(this)[0].value);
+        }
+
+    })
+
+    //if no checkboxes selected
+    if (html == "") {
+        //var currText = createmodal.find('.modal-body').html();
+        createmodal.find('.modal-body').html('You did not select any leaks to convert to WT Jobs.');
+        $('#btnWTcreate').prop("disabled", true);
+        $('#createModal').modal('toggle');
+        return false;
     }
-    
-    // Write second record
-    fputcsv($output, [
-        $row['wt_job2'],
-        $row['lid2'],
-        $row['address2'], // Use address2 for second record
-        $row['uV_mLevel2'],
-        $row['Status2'],
-        $row['job_status2'],
-        $row['DateTimeofRecord2'],
-        $row['jobid2'],
-        $row['acct'],
-        $row['prin2'],
-        $row['city2'], // Use city2 for second record
-        $row['node_name2'],
-        $row['mgmt_area2'],
-        $row['DeviceSerial2'],
-        $row['repair_code2'],
-        $row['repair_date2'] . " " . $row['repair_time2'],
-        $row['tech2'],
-        $row['CompanyName'],
-        "\t" . $row['ordid2'] // Prefix with tab to prevent formula injection
-    ]);
+
+    html = "You are about to create Watchtower jobs for:<br /><br />" + html;
+
+    //button to create everything
+    $('#btnWTcreate').click(function (event) {
+        $('#loading').show();
+        $('#btnWTcreate').prop("disabled", true);
+        var WThtml = '';
+
+        //loop through all the selected leaks
+        arr.forEach(function (leakid) {
+            if (1) // toggle to disable actual creation
+            {
+                var url = 'getData.php?a=createWTJob&id=' + leakid + '&csrf_token=' + $('#csrf_token').val();
+                $.ajax({
+                    url: url,
+                    type: "get",
+                    async: false,
+                    success: function (dataFromAjaxCall) {
+                        WThtml += dataFromAjaxCall + "\r\n";
+                    },
+                    error: function () {
+                    }
+                });
+            }
+        });
+
+        $('#loading').hide();
+        alert(WThtml);
+        window.location = refreshUrl;
+        $('#createModal').modal('toggle');
+        return true;
+    })
+
+    createmodal.find('.modal-body').html(html);
+    $('#createModal').modal('toggle');
 }
 
-// Close file pointer
-fclose($output);
+//--------------------------------------------------------------------------------------------
 
-// Mark download as complete
-setCookie("downloadStarted", 0, time() + 20, '/', "", false, false);
-
-// Exit if no rows were processed
-if ($i == 0) {
-    exit;
+function checkAll() {
+    var checkboxes = $("#map_canvas").find('input:checkbox');
+    checkboxes.each(function () {
+        $(this)[0].checked = true;
+        //console.log($(this)[0].checked);
+    })
+    //$("#map_canvas").find('input:checkbox').prop('checked', $(this).prop("checked"));
 }
-?>
+
+function unCheckAll() {
+    var checkboxes = $("#map_canvas").find('input:checkbox');
+    checkboxes.each(function () {
+        $(this)[0].checked = false;
+    })
+}
