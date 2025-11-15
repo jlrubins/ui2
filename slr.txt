@@ -1,282 +1,299 @@
-/*
-Functions for index and node search pages
-*/
+<?php
 
-function loadTotals(urlStr) {
-    var url = "getData.php?a=showTotals" + urlStr + "&csrf_token=" + $('#csrf_token').val();
-    $.get(url, function (data) {
-        $("#showTotals").html(data);
-    });
-
-}
-
-function loadTotalsByDate(urlStr) {
-
-    var url = "getData.php?a=showTotalsByDate" + urlStr + "&csrf_token=" + $('#csrf_token').val();
-    $.get(url, function (data) {
-        $("#showTotalsByDate").html(data);
-    });
-
-}
-
-//take list html and push it into div
-function populateListHTML() {
-
-    var listHTML = '';
-
-    var length = jsonData.length;
-    //alert(length);
-    listHTML += '<table class="table table-striped"><tr><td>Account / House</td><td>Address</td><td>uV/m</td><tr>';
-
-    for (i = 0; i < length; i++) {
-
-        listHTML += '<tr><td><a target=_blank href=details.php?id=' + jsonData[i].lid + '>' + jsonData[i].acct + ' ' + jsonData[i].house + '</td><td>' + jsonData[i].Address + '</td>'
-        listHTML += '<td>' + jsonData[i].uV_mLevel + '</td>';
-        //listHTML += '<td>' + jsonData[i].wt_job + '</td>';
-        listHTML += '<tr>';
-
-    }
-    listHTML += '</table>';
-
-    $("#map_canvas").html('<table width=100%>' + listHTML + '</table>');
-    $("#map_canvas").css("overflow-y", "scroll");
-    $("#map_canvas").css("background-color", "white");
-
-}
-
-//take list html and push it into div
-function populateListHTML2() {
-
-    var listHTML = '';
-
-    var length = jsonData.length;
-    //console.log(jsonData);
-    listHTML += '<table class="table table-striped"><tr><td>Account / House ';
-    listHTML += '<button id=btnCheckAll type="button" class="btn btn-default btn-xs">Check All</button>';
-    listHTML += '<button id=btnUnCheckAll type="button" class="btn btn-default btn-xs">Uncheck All</button>';
-
-    listHTML += '&nbsp; &nbsp; ';
-
-    listHTML += '<button id=btnCloseAll type="button" class="btn btn-default btn-xs">Close</button>';
-    listHTML += '<button id=btnWTmain type="button" class="btn btn-default btn-xs">Create WT</button>';
-    listHTML += '</td><td>Address</td><td>uV/m</td><td>Repaired</td><td>Job</td><tr>';
-
-    for (i = 0; i < length; i++) {
-
-
-        listHTML += '<tr><td>';
-
-        var jobhtml = null;
-        if (jsonData[i].eq_job != null) jobhtml = jsonData[i].job_type + ' ' + jsonData[i].eq_job;
-        if (jsonData[i].wt_job != null) jobhtml = jsonData[i].job_type + ' ' + jsonData[i].wt_job;
-        if (jsonData[i].jobid != null) jobhtml = jsonData[i].job_type + ' ' + jsonData[i].jobid;
-
-        if (jsonData[i].jobhtml == null) {
-            listHTML += '<input type="checkbox" value="' + jsonData[i].lid + '" text="test text">';
+    require('header.php');
+    use \LeaksApp\CoreHandler;
+    if (isset($_POST["status"])) {
+        $status = filter_var($_POST["status"], FILTER_SANITIZE_STRING);
+        $level = filter_var($_POST["level"], FILTER_SANITIZE_NUMBER_INT);
+        $frequency = filter_var($_POST["freq"], FILTER_SANITIZE_STRING);
+        $array_UniqueID = [];
+        if ($status === 'C') {
+            $repaired = filter_var($_POST["repaired"], FILTER_SANITIZE_STRING);
+            $ProblemFoundCode = filter_var($_POST["resolution"], FILTER_SANITIZE_STRING);
+        } else {
+            $repaired = null;
+            $ProblemFoundCode = null;
         }
-        listHTML += ' <a target=_blank href=details.php?id=' + jsonData[i].lid + '>' + jsonData[i].acct + ' ' + jsonData[i].house + '</td><td>' + jsonData[i].Address + '</td>'
-        listHTML += '<td>' + jsonData[i].uV_mLevel + '</td><td>' + jsonData[i].repair_date + '</td>';
-
-
-        //console.log(jsonData[i]);
-
-        if (jobhtml == null) jobhtml = 'n/a';
-        listHTML += '<td>' + jobhtml + '</td>';
-
-        listHTML += '<tr>';
-
-    }
-
-    listHTML += '</table>';
-
-    $("#map_canvas").html('<table width=100%>' + listHTML + '</table>');
-    $("#map_canvas").css("overflow-y", "scroll");
-    $("#map_canvas").css("background-color", "white");
-}
-
-
-//--------------------------------------------------------------------------------------------
-function showCloseAllModal() {
-    //alert('Hold tight, still working on this');
-
-    var mymodal = $('#myModal');
-
-    var checkboxes = $("#map_canvas").find('input:checkbox');
-    //console.log(checkboxes);
-
-    var arr = [];
-    var html = "";
-    $('#btnCloseLeaks').prop("enabled", true);
-
-    checkboxes.each(function () {
-        if ($(this)[0].checked) {
-            //console.log(jsonData.find(getText));
-            html += $(this)[0].value + "<BR>";
-            arr.push($(this)[0].value);
-        }
-
-    })
-    //console.log(arr);
-
-    //if no checkboxes selected
-    if (html == "") {
-        //var currText = mymodal.find('.modal-body').html();
-        mymodal.find('.modal-body').html('You did not select any leaks to close.');
-        $('#btnCloseLeaks').prop("disabled", true);
-        $('#myModal').modal('toggle');
-        return false;
-    }
-
-    //$("input:checkbox").prop('checked', $(this).prop("checked"));
-    html = "You are about to close:<BR>" + html + " with this ";
-
-    //get and show a select list of repair codes
-    $.ajax({
-        url: "getData.php?a=showRepairReasons&csrf_token=" + $('#csrf_token').val(),
-        type: "get",
-        async: false,
-        success: function (dataFromAjaxCall) {
-            html += dataFromAjaxCall;
-        },
-        error: function () {    /*connectionError();*/
-        }
-    });
-
-    //button to close everything
-    $('#btnCloseLeaks').click(function (event) {
-        $('#loading').show();
-        $('#btnCloseLeaks').prop("disabled", true);
-        var closehtml = '';
-
-        tech = username;
-        reason = $('#selRepairReasons').val();
-        if (reason == '') {
-            alert('Please select a repair reason');
-            $('#btnCloseLeaks').prop("disabled", false);
-            return false;
-        }
-
-        //loop through all the selected leaks
-        arr.forEach(function (leakid) {
-
-            //console.log(leakid);
-
-            if (1) // toggle to disable actual closing
-            {
-                var url = "getData.php?a=close&id=" + leakid + "&tech=" + tech + "&reason=" + reason + "&csrf_token=" + $('#csrf_token').val();
-                //console.log(url);
-
-                $.ajax({
-                    url: url,
-                    type: "get",
-                    async: false,
-                    success: function (dataFromAjaxCall) {
-                        closehtml += dataFromAjaxCall + "\r\n";
-                    },
-                    error: function () {
-                    }
-                });
+        /*=================================Frequency/Level Check Start===========================================*/
+        if (is_numeric($frequency)) {
+            if ($frequency >= 0 && $frequency <= 299) {
+                $freqCol = 'lowFreq';
+                $freqVal = $frequency;
+                $levelCol = 'lowLevel';
+                $levelVal = $level;
+            } elseif ($frequency >= 300 && $frequency <= 499) {
+                $freqCol = 'midFreq';
+                $freqVal = $frequency;
+                $levelCol = 'midLevel';
+                $levelVal = $level;
+            } else {
+                $freqCol = 'highFreq';
+                $freqVal = $frequency;
+                $levelCol = 'highLevel';
+                $levelVal = $level;
             }
-
-
-        });
-
-        $('#loading').hide();
-        alert(closehtml);
-        window.location = refreshUrl;
-        $('#myModal').modal('toggle');
-        return true;
-
-    })
-
-    //show the modal
-    //var currText = mymodal.find('.modal-body').html();
-    mymodal.find('.modal-body').html(html);
-    $('#myModal').modal('toggle');
-}
-
-//--------------------------------------------------------------------------------------------
-function showWTModal() {
-    //alert('Hold tight, still working on this');
-
-    var createmodal = $('#createModal');
-
-    var checkboxes = $("#map_canvas").find('input:checkbox');
-    //console.log(checkboxes);
-
-    var arr = [];
-    var html = "";
-    $('#btnWTcreate').prop("enabled", true);
-
-    checkboxes.each(function () {
-        if ($(this)[0].checked) {
-            //console.log(jsonData.find(getText));
-            html += $(this)[0].value + "<BR>";
-            arr.push($(this)[0].value);
         }
-
-    })
-
-    //if no checkboxes selected
-    if (html == "") {
-        //var currText = createmodal.find('.modal-body').html();
-        createmodal.find('.modal-body').html('You did not select any leaks to convert to WT Jobs.');
-        $('#btnWTcreate').prop("disabled", true);
-        $('#createModal').modal('toggle');
-        return false;
+        /*======================================================================================================*/
+        $sql = "SELECT MAX(UniqueID)+1 as UniqueIDcount FROM leaks WHERE source = 'manual'";
+        $conn = CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn();
+        $result = mysqli_query($conn, $sql) or die(
+            'Query failed: ' . mysqli_error($conn)
+        );
+        while ($row = mysqli_fetch_assoc($result)) {
+            $array_UniqueID[] = $row['UniqueIDcount'];
+        }
+        if (empty(array_filter($array_UniqueID))) {
+            $array_UniqueID[0] = 1;
+        }
+        
+        // Use prepared statement to prevent SQL injection
+        $query = "INSERT INTO `leaks`.`leaks` 
+                    (`UniqueID`,
+                    `DateTimeofRecord`,
+                    `last_new_reading`,
+                    `Location`,
+                    `Latitude`,
+                    `Longitude`,
+                    `Address`,
+                    `zip`,
+                    `uV_mLevel`,
+                    `Status`,
+                    `ProblemFoundCode`,
+                    `Comments`,
+                    `DateofRepair`,
+                    `TechID`,
+                    `insertDate`,
+                    `source`,
+                    `locationId`,
+                    `$levelCol`,
+                    `$freqCol`)
+                    VALUES
+                    (?, ?, ?, 'Manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, sysdate(), 'manual', ?, ?, ?)";
+        
+        $stmt = mysqli_prepare($conn, $query);
+        if ($stmt) {
+            // Sanitize all inputs
+            $uniqueID = filter_var($array_UniqueID[0], FILTER_SANITIZE_NUMBER_INT);
+            $detected = filter_var($_POST['detected'], FILTER_SANITIZE_STRING);
+            $lat = filter_var($_POST['lat'], FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
+            $lng = filter_var($_POST['lng'], FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
+            $address = filter_var($_POST['address'] . " " . $_POST['city'] . "," . $_POST['state'], FILTER_SANITIZE_STRING);
+            $zip = filter_var($_POST['zip'], FILTER_SANITIZE_NUMBER_INT);
+            $uvLevel = filter_var($_POST['level'], FILTER_SANITIZE_NUMBER_INT);
+            $statusSanitized = filter_var($_POST['status'], FILTER_SANITIZE_STRING);
+            $comments = filter_var($_POST['comments'], FILTER_SANITIZE_STRING);
+            $tech = filter_var($_POST['tech'], FILTER_SANITIZE_STRING);
+            $locationId = filter_var($_POST['areaid'], FILTER_SANITIZE_NUMBER_INT);
+            
+            mysqli_stmt_bind_param($stmt, "issssssssssssssss", 
+                $uniqueID,
+                $detected,
+                $detected,
+                $lat,
+                $lng,
+                $address,
+                $zip,
+                $uvLevel,
+                $statusSanitized,
+                $ProblemFoundCode,
+                $comments,
+                $repaired,
+                $tech,
+                $locationId,
+                $levelVal,
+                $freqVal
+            );
+            
+            $results = mysqli_stmt_execute($stmt);
+            if (!$results) {
+                die("Invalid Query: " . mysqli_error($conn));
+            } else {
+                echo "<h3>Congratulations, you have just submitted a new leak. Please click here to see the <a href=details.php?id=" . mysqli_insert_id($conn) . ">details</a></h3>";
+            }
+            mysqli_stmt_close($stmt);
+        } else {
+            die("Prepared statement failed: " . mysqli_error($conn));
+        }
     }
+    echo '<h2>Add Leak</h2>
+            <blockquote>
+            <p>To create a NWT JB or an SRO for an open pending leak that needs to be repaired, please select Open.</p>
+            <p>For leaks that are already repaired and are being entered for reporting purposes only, please select Closed.</p>
+            </blockquote>
+            <form id="newLeakForm" class="form-horizontal" method="post">
+              <div class="form-group">
+                <label for="status" class="col-sm-2 control-label">Status</label>
+                <div class="col-sm-5">
+                <select id="status" name="status" class="form-control validate[required] " style= "width: 100%">
+                <option></option>
+                <option value="O">Open</option>
+                <option value="C">Close</option>
+                </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="address" class="col-sm-2 control-label">Address</label>
+                <div class="col-sm-5">
+                    <input id="address" name="address" class="form-control validate[required]" placeholder="Address">
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="city" class="col-sm-2 control-label">City</label>
+                <div class="col-sm-5">
+                    <input class="form-control validate[required]" id="city" name="city" placeholder="city">
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="state" class="col-sm-2 control-label">State</label>
+                <div class="col-sm-5">
+                    <input class="form-control validate[required]" id="state" name="state" placeholder="State" maxlength="2">
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="zip" class="col-sm-2 control-label">Zip</label>
+                <div class="col-sm-5">
+                    <input class="form-control validate[required ,custom[onlyNumberSp]] " id="zip" name="zip" placeholder="Zip">
+                </div>
+              </div>
+    ';
 
-    html = "You are about to create Watchtower jobs for:<br /><br />" + html;
-
-    //button to create everything
-    $('#btnWTcreate').click(function (event) {
-        $('#loading').show();
-        $('#btnWTcreate').prop("disabled", true);
-        var WThtml = '';
-
-        //loop through all the selected leaks
-        arr.forEach(function (leakid) {
-            if (1) // toggle to disable actual creation
-            {
-                var url = 'getData.php?a=createWTJob&id=' + leakid + '&csrf_token=' + $('#csrf_token').val();
-                $.ajax({
-                    url: url,
-                    type: "get",
-                    async: false,
-                    success: function (dataFromAjaxCall) {
-                        WThtml += dataFromAjaxCall + "\r\n";
-                    },
-                    error: function () {
-                    }
-                });
+    $conn = CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP)->getConn();
+    $query = "SELECT o.sourceId, o.desc, o.id
+                FROM leaks.locations o
+                WHERE o.`active` = 1
+                GROUP BY sourceId, o.desc
+                ORDER BY o.desc";
+    $results = mysqli_query($conn, $query) or print_r(
+        'Query Error ' . mysqli_error($conn)
+    );
+    //display all the areas
+    echo '<div class="form-group">
+            <label for="areaid" class="col-sm-2 control-label">Area</label>
+            <div class="col-sm-5">
+            <select class="span3 form-control validate[required]" id="areaid" name="areaid" style= "width: 100%">';
+    $list = null;
+    $list[] = "<option value=>Select an area</option>";
+    while ($row = mysqli_fetch_array($results)) {
+         $list[] = "<option value=" . filter_var($row['id'], FILTER_SANITIZE_NUMBER_INT) . ">" . filter_var($row['desc'], FILTER_SANITIZE_STRING) . " (" . filter_var($row['id'],
+                        FILTER_SANITIZE_NUMBER_INT) . ")</option>";
+    }
+    echo implode("", $list);
+    echo "</select></div></div>";
+    echo '
+          <div class="form-group">
+            <label for="lat" class="col-sm-2 control-label">Lat</label>
+            <div class="col-sm-5">
+            <input class="form-control " id="lat" name="lat" placeholder="Lat">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="lng" class="col-sm-2 control-label">Long</label>
+            <div class="col-sm-5">
+            <input class="form-control " id="lng" name="lng" placeholder="Long">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="detected" class="col-sm-2 control-label">Date Detected</label>
+            <div class="col-sm-5">
+                <input type="text" id="detected" name="detected" value="' . date('Y-m-d') . '" class="form-control validate[required]" maxsize="10">
+            </div>
+          </div>
+          <div class="form-group" id="dtRepaired">
+            <label for="repaired" class="col-sm-2 control-label">Date Repaired</label>
+            <div class="col-sm-5">
+                <input type="text" id="repaired" name="repaired" value="' . date('Y-m-d') . '" class="form-control validate[required]" maxsize="10">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="level" class="col-sm-2 control-label">Level</label>
+            <div class="col-sm-5">
+            <input class="form-control validate[required ,custom[onlyNumberSp]] " id="level" name="level" placeholder="Level">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="freq" class="col-sm-2 control-label">Frequency</label>
+            <div class="col-sm-5">
+            <input class="form-control validate[required ,custom[onlyNumberSp]] " id="freq" name="freq" placeholder="Frequency">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="tech" class="col-sm-2 control-label">Repair Employee</label>
+            <div class="col-sm-5">
+            <input class="form-control validate[required]" id="tech" name="tech" placeholder="Repair Employee" value="' . filter_var($_SESSION['XOC']['USERNAME'], FILTER_SANITIZE_STRING) . '">
+            </div>
+          </div>
+          <div class="form-group" id="idResolution">
+            <label for="resolution" class="col-sm-2 control-label">Resolution</label>
+            <div class="col-sm-5">
+                <select id="resolution" name="resolution" class="form-control validate[required]" style= "width: 100%">
+                    <option></option>
+                    <option value="Aerial cable repaired">Aerial cable repaired</option>
+                    <option value="Customer premise – undetermined">Customer premise – undetermined</option>
+                    <option value="Drop disconnected">Drop disconnected</option>
+                    <option value="Drop repaired">Drop repaired</option>
+                    <option value="Inside wiring repaired">Inside wiring repaired</option>
+                    <option value="Other – leak repaired">Other – leak repaired</option>
+                    <option value="Outside connector repaired">Outside connector repaired</option>
+                    <option value="Underground cable repaired">Underground cable repaired</option>
+                </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="comments" class="col-sm-2 control-label">Comments</label>
+            <div class="col-sm-5">
+            <textarea id="address" name="comments" id=comments class="form-control"></textarea>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="col-sm-offset-2 col-sm-10">
+            <button type="submit" id=submitBtn class="btn btn-default">Add Leak</button>
+            </div>
+          </div>
+        </form>
+    ';
+    include('footer.php');
+?>
+<link rel="stylesheet" href="/CSS/jquery.validationEngine___latest.css"/>
+<script src="/JS/jquery.validationEngine-en___latest.js" charset="utf-8"></script>
+<script src="/JS/jquery.validationEngine___latest.js" charset="utf-8"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.2/css/select2.min.css" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.2/js/select2.min.js"></script>
+<script>
+    $("#detected").datepicker({
+        dateFormat: 'yy-mm-dd'
+    });
+    $("#repaired").datepicker({
+        dateFormat: 'yy-mm-dd'
+    });
+    $(document).ready(function () {
+        //get tabs working
+        $('#submitBtn').click(function (e) {
+            e.preventDefault()
+            if ($("#newLeakForm").validationEngine('validate')) {
+                $("form").submit();
+            }
+            //$("#newLeakForm").submit();
+        });
+        /*=====================================SELECT2 INITIALIZE==============================================================*/
+        $('select').select2();
+        /*=====================================SELECT2 END=====================================================================*/
+        /*=====================================STATUS ONCHANGE START===========================================================*/
+        $("#dtRepaired").hide();
+        $("#idResolution").hide();
+        $("#status").on('change', function () {
+            var statusSelected = $(this).val();
+            console.log(statusSelected); // or $(this).val()
+            if (statusSelected != '' && statusSelected == 'C') {
+                $("#dtRepaired").show('slow');
+                $("#idResolution").show('slow');
+            }
+            if (statusSelected != '' && statusSelected == 'O') {
+                $("#dtRepaired").hide('slow');
+                $("#idResolution").hide('slow');
+                $("#repaired").val('');
+                $("#resolution").val('');
             }
         });
-
-        $('#loading').hide();
-        alert(WThtml);
-        window.location = refreshUrl;
-        $('#createModal').modal('toggle');
-        return true;
-    })
-
-    createmodal.find('.modal-body').html(html);
-    $('#createModal').modal('toggle');
-}
-
-//--------------------------------------------------------------------------------------------
-
-function checkAll() {
-    var checkboxes = $("#map_canvas").find('input:checkbox');
-    checkboxes.each(function () {
-        $(this)[0].checked = true;
-        //console.log($(this)[0].checked);
-    })
-    //$("#map_canvas").find('input:checkbox').prop('checked', $(this).prop("checked"));
-}
-
-function unCheckAll() {
-    var checkboxes = $("#map_canvas").find('input:checkbox');
-    checkboxes.each(function () {
-        $(this)[0].checked = false;
-    })
-}
+        /*=====================================STATUS ONCHANGE End============================================================*/
+    });
+</script>
