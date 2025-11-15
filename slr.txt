@@ -1,0 +1,464 @@
+<?php
+
+use \LeaksApp\General;
+use \LeaksApp\CoreHandler;
+
+ini_set('memory_limit', '4G');
+error_reporting(E_ERROR | E_PARSE);
+require_once __DIR__ . '/include.php';
+require_once('Helpers/classSecurity.php');
+require_once('Helpers/class.CORE.leaksUser.php');
+
+$dbh = CoreHandler::instance()->database(CONN_ID_LEAKS_GENERAL_APP);
+$publicfile = filter_var($_GET['publicfile'] ?? 0, FILTER_SANITIZE_NUMBER_INT);
+
+// Handle CSV export requests
+$xml = 0;
+if (!empty($_GET['csv'])) {
+    // Parse query parameters from cookie instead of GET for CSV requests
+    if (!empty($_COOKIE['query'])) {
+        parse_str($_COOKIE['query'], $_GET);
+        $xml = 1;
+    }
+}
+
+// Validate that filters exist for CSV exports
+if (($xml == 1) && empty($_GET['filter'])) {
+    die("A filter is required. No filter was detected by your web browser. Please allow the grid to fully load prior to requesting an EXPORT. <a href='viewLeaks.php'>Go Back to Leaks Page</a>");
+}
+
+// Initialize query components
+$whereConditions = [];
+$bindings = [];
+$combinedDateFound_from = null;
+$combinedDateFound_to = null;
+
+// Process filters
+if (!empty($_GET['filter'])) {
+    $filters = $_GET['filter'];
+    
+    // Ensure filters is an array
+    if (is_string($filters)) {
+        $filters = json_decode($filters, true);
+    }
+    
+    if (isset($filters['filters']) && is_array($filters['filters'])) {
+        processFilters($filters['filters'], $whereConditions, $bindings, $combinedDateFound_from, $combinedDateFound_to);
+    }
+}
+
+// Process location tree
+if (!empty($_GET['locations'])) {
+    $locationIds = explode(',', filter_var($_GET['locations'], FILTER_SANITIZE_STRING));
+    $locationIds = array_filter(array_map('intval', $locationIds)); // Sanitize and remove empty values
+    
+    if (!empty($locationIds)) {
+        $placeholders = str_repeat('?,', count($locationIds) - 1) . '?';
+        $whereConditions[] = "locationId IN ($placeholders)";
+        $bindings = array_merge($bindings, $locationIds);
+    }
+}
+
+// Build combined date found condition
+if ($combinedDateFound_from || $combinedDateFound_to) {
+    buildCombinedDateCondition($whereConditions, $bindings, $combinedDateFound_from, $combinedDateFound_to);
+}
+
+// Build WHERE clause
+$whereClause = '';
+if (!empty($whereConditions)) {
+    $whereClause = 'WHERE ' . implode(' AND ', $whereConditions);
+}
+
+// Handle sorting
+$sortClause = buildSortClause($_GET);
+
+// Build query based on request type (CSV or JSON)
+if ($xml) {
+    handleCsvExport($dbh, $whereClause, $bindings, $publicfile);
+} else {
+    handleJsonResponse($dbh, $whereClause, $bindings, $_GET);
+}
+
+/**
+ * Process filters recursively
+ */
+function processFilters($filters, &$whereConditions, &$bindings, &$combinedDateFound_from, &$combinedDateFound_to) {
+    foreach ($filters as $filterItem) {
+        if (empty($filterItem['logic'])) { // Parent-level condition
+            processFilterItem($filterItem, $whereConditions, $bindings, $combinedDateFound_from, $combinedDate_found_to);
+        } else { // Nested condition
+            $subConditions = [];
+            if (isset($filterItem['filters']) && is_array($filterItem['filters'])) {
+                foreach ($filterItem['filters'] as $subFilter) {
+                    processFilterItem($subFilter, $subConditions, $bindings, $combinedDateFound_from, $combinedDateFound_to);
+                }
+            }
+            
+            if (!empty($subConditions)) {
+                $whereConditions[] = '(' . implode(' ' . strtoupper($filterItem['logic']) . ' ', $subConditions) . ')';
+            }
+        }
+    }
+}
+
+/**
+ * Process individual filter item
+ */
+function processFilterItem($filterItem, &$conditions, &$bindings, &$combinedDateFound_from, &$combinedDateFound_to) {
+    // Validate required fields
+    if (empty($filterItem['field']) || empty($filterItem['operator']) || !isset($filterItem['value'])) {
+        return;
+    }
+    
+    $field = $filterItem['field'];
+    $operator = $filterItem['operator'];
+    $value = $filterItem['value'];
+    
+    // Handle special date fields
+    if ($field === "DateTimeofRecord" || $field === "repair_date") {
+        $value = date("Y-m-d", strtotime(preg_replace("/\(.+\)/", "", $value)));
+    } elseif ($field == "combinedDateFound") {
+        // Handle combined date found logic
+        $value = date("Y-m-d", strtotime(preg_replace("/\(.+\)/", "", $value)));
+        if ($operator == "gte") {
+            $combinedDateFound_from = $value;
+        } elseif ($operator == "lte") {
+            $combinedDateFound_to = $value;
+        }
+        return; // Skip adding to conditions as this is handled separately
+    } elseif ($field == "id") {
+        // Handle ambiguous column name
+        $field = "l.id";
+    }
+    
+    // Sanitize field name (only allow alphanumeric and underscore)
+    $field = preg_replace('/[^a-zA-Z0-9_\.]/', '', $field);
+    
+    // Map operators to SQL equivalents
+    $operatorMap = [
+        'eq' => '=',
+        'lte' => '<=',
+        'gte' => '>=',
+        'lt' => '<',
+        'gt' => '>',
+        'n=' => '<>'
+    ];
+    
+    $sqlOperator = $operatorMap[$operator] ?? $operator;
+    
+    // Handle special operators
+    if ($operator === 'contains') {
+        $conditions[] = "$field LIKE ?";
+        $bindings[] = "%$value%";
+    } elseif ($operator === 'doesnotcontain') {
+        $conditions[] = "$field NOT LIKE ?";
+        $bindings[] = "%$value%";
+    } else {
+        // Handle date range adjustments
+        if (strpos($sqlOperator, '>=') !== false && preg_match('/\d{4}-\d{2}-\d{2}/', $value)) {
+            $value .= ' 00:00:00';
+        } elseif (strpos($sqlOperator, '<=') !== false && preg_match('/\d{4}-\d{2}-\d{2}/', $value)) {
+            $value .= ' 23:59:59';
+        }
+        
+        // Quote string values for certain fields
+        $quotableFields = ['Status', 'node_name', 'mgmt_area', 'zip', 'city', 'Address'];
+        if (in_array($field, $quotableFields) && !is_numeric($value)) {
+            $conditions[] = "$field $sqlOperator ?";
+            $bindings[] = $value;
+        } else {
+            $conditions[] = "$field $sqlOperator ?";
+            $bindings[] = $value;
+        }
+    }
+}
+
+/**
+ * Build combined date condition
+ */
+function buildCombinedDateCondition(&$whereConditions, &$bindings, $combinedDateFound_from, $combinedDateFound_to) {
+    if ($combinedDateFound_from && $combinedDateFound_to) {
+        $whereConditions[] = "
+            (
+                (DateTimeofRecord >= ? AND DateTimeofRecord <= ?)
+                OR 
+                (repair_date >= ? AND repair_date <= ?)
+            )
+        ";
+        $bindings[] = $combinedDateFound_from . ' 00:00:00';
+        $bindings[] = $combinedDateFound_to . ' 23:59:59';
+        $bindings[] = $combinedDateFound_from;
+        $bindings[] = $combinedDateFound_to;
+    } elseif ($combinedDateFound_from && !$combinedDateFound_to) {
+        $whereConditions[] = "
+            (
+                (DateTimeofRecord >= ?)
+                OR 
+                (
+                    repair_date != '0000-00-00' AND 
+                    repair_date != '0001-01-01' AND 
+                    repair_date >= ?
+                )
+            )
+        ";
+        $bindings[] = $combinedDateFound_from . ' 00:00:00';
+        $bindings[] = $combinedDateFound_from;
+    } elseif (!$combinedDateFound_from && $combinedDateFound_to) {
+        $whereConditions[] = "
+            (
+                (DateTimeofRecord <= ?)
+                OR 
+                (
+                    repair_date != '0000-00-00' AND 
+                    repair_date != '0001-01-01' AND 
+                    repair_date <= ?
+                )
+            )
+        ";
+        $bindings[] = $combinedDateFound_to . ' 23:59:59';
+        $bindings[] = $combinedDateFound_to;
+    }
+}
+
+/**
+ * Build sort clause
+ */
+function buildSortClause($params) {
+    if (empty($params['sort'])) {
+        return "ORDER BY DateTimeofRecord DESC";
+    }
+    
+    $sort = $params['sort'];
+    
+    // Ensure sort is an array
+    if (is_string($sort)) {
+        $sort = json_decode($sort, true);
+    }
+    
+    if (!is_array($sort) || empty($sort[0])) {
+        return "ORDER BY DateTimeofRecord DESC";
+    }
+    
+    $sortField = filter_var($sort[0]['field'] ?? '', FILTER_SANITIZE_STRING);
+    $sortDir = strtoupper(filter_var($sort[0]['dir'] ?? 'DESC', FILTER_SANITIZE_STRING));
+    
+    // Validate sort direction
+    if (!in_array($sortDir, ['ASC', 'DESC'])) {
+        $sortDir = 'DESC';
+    }
+    
+    // Handle special field names
+    if ($sortField == "city") {
+        $sortField = "a.city";
+    }
+    
+    // Validate sort field (only allow alphanumeric and underscore)
+    $sortField = preg_replace('/[^a-zA-Z0-9_\.]/', '', $sortField);
+    
+    if (empty($sortField)) {
+        return "ORDER BY DateTimeofRecord DESC";
+    }
+    
+    return "ORDER BY $sortField $sortDir";
+}
+
+/**
+ * Handle CSV export
+ */
+function handleCsvExport($dbh, $whereClause, $bindings, $publicfile) {
+    // Insert into PSID table
+    $query = "INSERT IGNORE INTO PSID 
+                SELECT 
+                    DISTINCT substr(`p`.`cuid`,1,2) AS `state`, 
+                    `p`.`name` AS `city`,
+                    group_concat(`p`.`psid` separator ',') AS `PSID`, 
+                    group_concat(distinct p.cuid) CUID 
+                FROM `town_codes` `p` 
+                GROUP BY `p`.`name`,substr(`p`.`cuid`,1,2)";
+    
+    $dbh->runSQLResult($query);
+    
+    // Define query components based on publicfile type
+    if ($publicfile == 1) {
+        // Shorter-form export
+        $select = "CONCAT(CONCAT(CONCAT(CONCAT('=HYPERLINK(\"https://cdxoc.cable.comcast.com/apps/leaks/details.php?id=', l.id), '\",\"'), l.id), '\")') as id, 
+                    CONCAT(CONCAT('=\"', pl.PSID), '\"') AS psid, 
+                    CONCAT(CONCAT('=\"', pl.CUID), '\"') AS cuid, 
+                    Address, a.city as City, l.uV_mLevel, l.`Status` as Leak_Status, l.DateTimeofRecord, l.last_new_reading, a.repair_code, 
+                    a.repair_date, a.tech, a.jobid as SRO_JobID, wt_job, a.eq_job, l.uV_mLevel_orig";
+        $join = "LEFT JOIN accts_to_SRO a ON l.id = a.leakID 
+                 LEFT JOIN PSID pl ON pl.city = a.city AND pl.state = a.state 
+                 LEFT JOIN locations c ON (c.id = l.locationId)";
+        $additionalWhere = " AND (a.jobid IS NULL OR a.jobid <> 0)";
+    } elseif ($publicfile == 2) {
+        // Node score export
+        $select = "CONCAT(CONCAT(CONCAT(CONCAT('=HYPERLINK(\"https://cdxoc.cable.comcast.com/apps/leaks/details.php?id=', l.id), '\",\"'), l.id), '\")') as id, 
+                    Address, l.uV_mLevel, l.Status as Leak_Status, a.job_status as Ticket_Status,a.node_name as node, a.mgmt_area,
+                    a.acct, a.house, l.DateTimeofRecord";
+        $join = "LEFT JOIN accts_to_SRO a ON l.id = a.leakID 
+                 LEFT JOIN PSID pl ON pl.city = a.city AND pl.state = a.state 
+                 LEFT JOIN locations c ON (c.id = l.locationId)";
+        $additionalWhere = " AND l.Status='O' AND l.uV_mLevel>=17 AND a.ordid>0";
+    } else {
+        // Full export
+        $select = "CONCAT(CONCAT(CONCAT(CONCAT('=HYPERLINK(\"https://cdxoc.cable.comcast.com/apps/leaks/details.php?id=', l.id), '\",\"'), l.id), '\")') as id, 
+                    Address, l.uV_mLevel, l.`Status` as Leak_Status, a.job_status as Ticket_Status, l.DateTimeofRecord, l.last_new_reading, a.jobid as SRO_JobID, 
+                    CONCAT(\"'\",a.ordid) as SRO_WorkOrderID,
+                    CONCAT(\"'\",a.ordid,'00001') as SRO_WorkOrderID_Plus5,
+                    a.acct, l.Latitude as lat, l.Longitude as lng, a.acct_lat, a.acct_lng, a.ticket_num, a.house,
+                    substr(`a`.`fta_code`,5,4) as prin, l.zip, a.node_name as node, node_color_orig, node_score_orig, is_node_contains_prp, is_node_contains_sas, a.cmts, a.mgmt_area as ma, 
+                    a.last_job_update, l.DeviceSerial, a.repair_code, a.repair_date, 
+                    a.tech, l.locationId, c.desc as CompanyName, CONCAT(CONCAT('=\"', pl.PSID), '\"') AS psid, 
+                    c.region, division, PeakID, fta_code, wt_job, a.eq_job, lowLevel, lowFreq, lowChan, midLevel, 
+                    midFreq, midChan, highLevel, highFreq, highChan, lte, l.uV_mLevel_orig, l.PeakID as Comsonics_PeakID, l.WorkOrderID as Comsonics_WorkOrderID, 
+                    l.UniqueID as Arcom_UniqueID, 
+                    a.is_active_premise, a.address_line1 as nearestActiveCustAddr1, a.address_line2 as nearestActiveCustAddr2, a.city as nearestActiveCustCity,
+                    a.state as nearestActiveCustState, a.postal_code as nearestActiveCustPostalcode";
+        $join = "LEFT JOIN accts_to_SRO a ON l.id = a.leakID 
+                 LEFT JOIN PSID pl ON pl.city = a.city AND pl.state = a.state 
+                 LEFT JOIN locations c ON (c.id = l.locationId)";
+        $additionalWhere = "";
+    }
+    
+    // Build final query
+    $query = "SELECT $select FROM leaks l $join $whereClause $additionalWhere";
+    
+    // Execute query with bindings
+    executeAndExportCsv($dbh, $query, $bindings);
+}
+
+/**
+ * Handle JSON response
+ */
+function handleJsonResponse($dbh, $whereClause, $bindings, $params) {
+    $pagesize = 20;
+    $skip = filter_var($params['skip'] ?? 0, FILTER_SANITIZE_NUMBER_INT);
+    
+    // Simple select for JSON response
+    $select = "l.id, a.jobid, a.wt_job, a.ticket_num, l.Status, l.DateTimeofRecord, l.Address, 
+               l.uV_mLevel, a.city, l.zip, a.node_name, a.cmts, a.mgmt_area, l.locationId, a.repair_date, l.uV_mLevel_orig";
+    $join = "LEFT JOIN accts_to_SRO a ON l.id = a.leakID";
+    
+    // Get count for pagination
+    $countQuery = "SELECT COUNT(*) FROM leaks l LEFT JOIN accts_to_SRO a ON l.id = a.leakID $whereClause";
+    $countResult = executePreparedQuery($dbh, $countQuery, $bindings);
+    $count = 0;
+    if ($countResult && $row = mysqli_fetch_row($countResult)) {
+        $count = $row[0];
+    }
+    
+    // Build data query with pagination
+    $dataQuery = "SELECT $select FROM leaks l $join $whereClause ORDER BY DateTimeofRecord DESC LIMIT ? OFFSET ?";
+    $dataBindings = array_merge($bindings, [$pagesize, $skip]);
+    
+    // Execute query
+    $result = executePreparedQuery($dbh, $dataQuery, $dataBindings);
+    
+    // Process results
+    $leaks = [];
+    if ($result && mysqli_num_rows($result)) {
+        while ($leak = mysqli_fetch_assoc($result)) {
+            foreach($leak as $key => $value) {
+                $leak[$key] = filter_var($value, FILTER_SANITIZE_STRING);
+            }
+            $leaks[] = $leak;
+        }
+    }
+    
+    // Return JSON response
+    header('Content-type: application/json');
+    setcookie("query", filter_input(INPUT_SERVER, 'QUERY_STRING', FILTER_SANITIZE_URL));
+    echo json_encode([
+        'total' => $count,
+        'leaks' => $leaks
+    ]);
+}
+
+/**
+ * Execute prepared query with bindings
+ */
+function executePreparedQuery($dbh, $query, $bindings) {
+    // For debugging
+    if (General::instance()->IS_DEBUG_LOGGING) {
+        file_put_contents("/tmp/queryfile.tmp", "\nSelect query:\n\n" . $query . "\nBindings: " . print_r($bindings, true) . "\n", FILE_APPEND);
+    }
+    
+    // Create prepared statement
+    $stmt = mysqli_prepare($dbh->getConn(), $query);
+    
+    if (!$stmt) {
+        return false;
+    }
+    
+    // Bind parameters if any
+    if (!empty($bindings)) {
+        $types = str_repeat('s', count($bindings)); // All as strings for simplicity
+        mysqli_stmt_bind_param($stmt, $types, ...$bindings);
+    }
+    
+    // Execute and get result
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    
+    return $result;
+}
+
+/**
+ * Execute query and export as CSV
+ */
+function executeAndExportCsv($dbh, $query, $bindings) {
+    $result = executePreparedQuery($dbh, $query, $bindings);
+    
+    if (!$result) {
+        echo json_encode(['total' => 0, 'leaks' => []]);
+        return;
+    }
+    
+    // Output headers for CSV download
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename=LeakData.csv');
+    
+    // Create file pointer
+    $output = fopen('php://output', 'w');
+    $headers = [];
+    
+    // Process results
+    $i = 0;
+    while ($leak = mysqli_fetch_assoc($result)) {
+        foreach($leak as $key => $value) {
+            $leak[$key] = filter_var($value, FILTER_SANITIZE_STRING);
+        }
+        
+        // Add quotes to specific fields
+        if (!empty($leak['acct'])) {
+            $leak['acct'] = "'" . $leak['acct'];
+        }
+        if (!empty($leak['OrderID'])) {
+            $leak['OrderID'] = "'" . $leak['OrderID'];
+        }
+        if (!empty($leak['house'])) {
+            $leak['house'] = "'" . $leak['house'];
+        }
+        if (!empty($leak['node'])) {
+            $leak['node'] = "'" . $leak['node'];
+        }
+        
+        // Output headers on first iteration
+        if ($i == 0) {
+            $headers = array_keys($leak);
+            fputcsv($output, $headers);
+            $i++;
+        }
+        
+        // Output row data
+        fputcsv($output, $leak);
+    }
+    
+    fclose($output);
+    
+    // If no rows were processed, return empty JSON
+    if ($i == 0) {
+        echo json_encode(['total' => 0, 'leaks' => []]);
+    }
+}
